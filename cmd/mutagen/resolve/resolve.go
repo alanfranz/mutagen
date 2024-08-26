@@ -39,7 +39,11 @@ func resolveMain(command *cobra.Command, arguments []string) error {
 	synchronizationService := synchronization.NewSynchronizationClient(daemonConnection)
 
 	// Invoke the resolution.
-	if err := synchronizationService.ResolveConflicts(selection, resolution == "alpha"); err != nil {
+	request := &synchronization.ResolveConflictsRequest{
+		Selection:  selection,
+		FavorAlpha: resolution == "alpha",
+	}
+	if _, err := synchronizationService.ResolveConflicts(context.Background(), request); err != nil {
 		return fmt.Errorf("unable to resolve conflicts: %w", err)
 	}
 

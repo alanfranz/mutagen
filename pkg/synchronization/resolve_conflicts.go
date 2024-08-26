@@ -3,13 +3,15 @@ package synchronization
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/mutagen-io/mutagen/pkg/selection"
 	"github.com/mutagen-io/mutagen/pkg/synchronization/core"
 	"github.com/mutagen-io/mutagen/pkg/synchronization/endpoint/local"
 	"github.com/mutagen-io/mutagen/pkg/synchronization/rsync"
 )
 
-func (s *synchronizationService) ResolveConflicts(ctx context.Context, request *ResolveConflictsRequest) (*ResolveConflictsResponse, error) {
+func (m *Manager) ResolveConflicts(ctx context.Context, selection *selection.Selection, favorAlpha bool) error {
 	// Lock the session registry for the duration of the operation.
 	s.sessionsLock.Lock()
 	defer s.sessionsLock.Unlock()

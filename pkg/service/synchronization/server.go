@@ -149,3 +149,19 @@ func (s *Server) Terminate(ctx context.Context, request *TerminateRequest) (*Ter
 	// Success.
 	return &TerminateResponse{}, nil
 }
+
+// ResolveConflicts resolves conflicts in a session.
+func (s *Server) ResolveConflicts(ctx context.Context, request *ResolveConflictsRequest) (*ResolveConflictsResponse, error) {
+	// Validate the request.
+	if err := request.ensureValid(); err != nil {
+		return nil, fmt.Errorf("invalid resolve conflicts request: %w", err)
+	}
+
+	// Perform conflict resolution.
+	if err := s.manager.ResolveConflicts(ctx, request.Selection, request.FavorAlpha); err != nil {
+		return nil, err
+	}
+
+	// Success.
+	return &ResolveConflictsResponse{}, nil
+}

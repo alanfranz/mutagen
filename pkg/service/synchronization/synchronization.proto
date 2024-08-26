@@ -122,6 +122,17 @@ message TerminateRequest {
 // TerminateResponse indicates completion of termination operation(s).
 message TerminateResponse{}
 
+// ResolveConflictsRequest encodes a request to resolve conflicts in a session.
+message ResolveConflictsRequest {
+    // Selection is the session selection criteria.
+    selection.Selection selection = 1;
+    // FavorAlpha indicates whether to resolve conflicts in favor of the alpha side.
+    bool favorAlpha = 2;
+}
+
+// ResolveConflictsResponse indicates completion of conflict resolution operation(s).
+message ResolveConflictsResponse{}
+
 // Synchronization manages the lifecycle of synchronization sessions.
 service Synchronization {
     // Create creates a new session.
@@ -138,4 +149,7 @@ service Synchronization {
     rpc Reset(ResetRequest) returns (ResetResponse) {}
     // Terminate terminates sessions.
     rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
+
+    // ResolveConflicts resolves conflicts in a session.
+    rpc ResolveConflicts(ResolveConflictsRequest) returns (ResolveConflictsResponse) {}
 }

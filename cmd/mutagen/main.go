@@ -12,6 +12,7 @@ import (
 	"github.com/mutagen-io/mutagen/cmd/mutagen/forward"
 	"github.com/mutagen-io/mutagen/cmd/mutagen/project"
 	"github.com/mutagen-io/mutagen/cmd/mutagen/sync"
+	"github.com/mutagen-io/mutagen/cmd/mutagen/resolve"
 
 	"github.com/mutagen-io/mutagen/pkg/mutagen"
 	"github.com/mutagen-io/mutagen/pkg/prompting"
@@ -76,6 +77,7 @@ func init() {
 		forward.ForwardCommand,
 		project.ProjectCommand,
 		daemon.DaemonCommand,
+		resolve.ResolveCommand,
 		versionCommand,
 		legalCommand,
 		generateCommand,

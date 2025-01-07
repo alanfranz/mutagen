@@ -1043,7 +1043,7 @@ func TestReconcile(t *testing.T) {
 		for _, mode := range test.modes {
 			// Perform reconciliation.
 			ancestorChanges, alphaChanges, betaChanges, conflicts := Reconcile(
-				test.ancestor, test.alpha, test.beta, mode,
+				test.ancestor, test.alpha, test.beta, mode, "none",
 			)
 
 			// Verify the ancestor changes.
@@ -1085,5 +1085,5 @@ func TestReconcilePanicWithInvalidSynchronizationMode(t *testing.T) {
 			t.Error("Reconcile did not panic with invalid synchronization mode")
 		}
 	}()
-	Reconcile(nil, tF1, nil, SynchronizationMode(-1))
+	Reconcile(nil, tF1, nil, SynchronizationMode(-1), "none")
 }

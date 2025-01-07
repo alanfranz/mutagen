@@ -32,7 +32,7 @@ type reconciler struct {
 }
 
 // reconcile performs recursive reconciliation.
-func (r *reconciler) reconcile(path string, ancestor, alpha, beta *Entry) {
+func (r *reconciler) reconcile(path string, ancestor, alpha, beta *Entry, resolveConflictsInFavorOf string) {
 	// At the start of this function, we have only one invariant: The ancestor
 	// (by definition and enforcement) neither represents nor contains
 	// unsynchronizable content. This invariant yields an important corollary:
@@ -127,6 +127,7 @@ func (r *reconciler) reconcile(path string, ancestor, alpha, beta *Entry) {
 				ancestorContents[name],
 				alphaContents[name],
 				betaContents[name],
+				"none",
 			)
 		}
 
@@ -520,12 +521,12 @@ func (r *reconciler) handleDisagreementOneWayReplica(path string, ancestor, alph
 // Reconcile performs a recursive three-way merge and generates a list of
 // changes for the ancestor, alpha, and beta, as well as a list of conflicts.
 // All of these lists are returned in depth-first but non-deterministic order.
-func Reconcile(ancestor, alpha, beta *Entry, mode SynchronizationMode) ([]*Change, []*Change, []*Change, []*Conflict) {
+func Reconcile(ancestor, alpha, beta *Entry, mode SynchronizationMode, resolveConflictsInFavorOf string) ([]*Change, []*Change, []*Change, []*Conflict) {
 	// Create the reconciler.
 	r := &reconciler{mode: mode}
 
 	// Perform reconciliation.
-	r.reconcile("", ancestor, alpha, beta)
+	r.reconcile("", ancestor, alpha, beta, resolveConflictsInFavorOf)
 
 	// Done.
 	return r.ancestorChanges, r.alphaChanges, r.betaChanges, r.conflicts

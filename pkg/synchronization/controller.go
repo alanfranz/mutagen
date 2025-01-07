@@ -1188,6 +1188,7 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 			αContent,
 			βContent,
 			synchronizationMode,
+			"none",
 		)
 		if c.logger.Level() >= logging.LevelTrace {
 			for _, change := range ancestorChanges {

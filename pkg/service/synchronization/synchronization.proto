@@ -73,6 +73,9 @@ message FlushRequest {
     selection.Selection selection = 2;
     // SkipWait indicates whether or not the operation should avoid blocking.
     bool skipWait = 3;
+    // ResolveConflictsFor specifies which endpoint's changes should take precedence
+    // when resolving conflicts ("alpha", "beta", or empty for standard behavior).
+    string resolveConflictsFor = 4;
 }
 
 // FlushResponse indicates completion of flush operation(s).

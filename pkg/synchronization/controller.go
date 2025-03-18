@@ -66,6 +66,9 @@ type controller struct {
 	// a state where it can perform synchronization. It is closed when
 	// synchronization fails due to an error.
 	synchronizing chan struct{}
+	// resolveConflictsFor specifies which endpoint's changes should take precedence
+	// when resolving conflicts ("alpha", "beta", or empty for standard behavior).
+	resolveConflictsFor string
 	// lifecycleLock guards access to disabled, cancel, flushRequests, and done.
 	// Only the current holder of the lifecycle lock may set any of these fields
 	// or invoke cancel. The synchronization loop may close close done or
@@ -324,7 +327,7 @@ func (c *controller) currentState() *State {
 // specified, then the method will wait until a post-flush synchronization cycle
 // has completed. The provided context (which must be non-nil) can terminate
 // this wait early.
-func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) error {
+func (c *controller) flush(ctx context.Context, prompter string, skipWait bool, resolveConflictsFor string) error {
 	// Update status.
 	prompting.Message(prompter, fmt.Sprintf("Forcing synchronization cycle for session %s...", c.session.Identifier))
 
@@ -345,6 +348,9 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 
 	// Perform logging.
 	c.logger.Infof("Forcing synchronization cycle")
+	if resolveConflictsFor != "" {
+		c.logger.Infof("Conflicts will be resolved in favor of %s", resolveConflictsFor)
+	}
 
 	// Check if the session is currently synchronizing and store the channel
 	// that we'll use to track synchronizability.
@@ -364,8 +370,16 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 	// Release the lifecycle lock.
 	c.lifecycleLock.Unlock()
 
-	// Create a flush request.
+	// Create a flush request that includes the resolveConflictsFor parameter.
+	// We'll pass a tuple through the channel: the error and the resolveConflictsFor value.
 	request := make(chan error, 1)
+
+	// Set the resolveConflictsFor value in a context value to pass it through.
+	// This is a bit of a hack but allows us to maintain backward compatibility
+	// with the existing flush request channel.
+	type resolveContextKey string
+	const resolveKey resolveContextKey = "resolveConflictsFor"
+	ctxWithResolve := context.WithValue(ctx, resolveKey, resolveConflictsFor)
 
 	// If we don't want to wait, then we can simply send the request in a
 	// non-blocking manner, in which case either this request (or one that's
@@ -375,12 +389,20 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 	if skipWait {
 		select {
 		case flushRequests <- request:
+			// Store the resolveConflictsFor value in the controller to be used by the synchronize function
+			c.stateLock.Lock()
+			c.resolveConflictsFor = resolveConflictsFor
+			c.stateLock.UnlockWithoutNotify()
 			return nil
 		case <-synchronizing:
 			return errors.New("synchronization failed before flush request could be sent")
 		case <-done:
 			return errors.New("synchronization terminated before flush request could be sent")
 		default:
+			// Store the resolveConflictsFor value in the controller to be used by the synchronize function
+			c.stateLock.Lock()
+			c.resolveConflictsFor = resolveConflictsFor
+			c.stateLock.UnlockWithoutNotify()
 			return nil
 		}
 	}
@@ -389,7 +411,11 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 	// cancellation, failure, or termination.
 	select {
 	case flushRequests <- request:
-	case <-ctx.Done():
+		// Store the resolveConflictsFor value in the controller to be used by the synchronize function
+		c.stateLock.Lock()
+		c.resolveConflictsFor = resolveConflictsFor
+		c.stateLock.UnlockWithoutNotify()
+	case <-ctxWithResolve.Done():
 		return errors.New("flush cancelled before request could be sent")
 	case <-synchronizing:
 		return errors.New("synchronization failed before flush request could be sent")
@@ -402,7 +428,7 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 	select {
 	case err := <-request:
 		return err
-	case <-ctx.Done():
+	case <-ctxWithResolve.Done():
 		return errors.New("flush cancelled while waiting for response")
 	case <-synchronizing:
 		return errors.New("synchronization failed while waiting for flush response")
@@ -1183,13 +1209,28 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 
 		// Perform reconciliation.
 		c.logger.Debug("Performing reconciliation")
+		
+		// Check if we should resolve conflicts in favor of a specific endpoint
+		resolveConflictsInFavorOf := c.resolveConflictsFor
+		
+		// If we're resolving conflicts, log this information
+		if resolveConflictsInFavorOf != "" {
+			c.logger.Info("Resolving conflicts in favor of", resolveConflictsInFavorOf)
+		}
+		
 		ancestorChanges, αTransitions, βTransitions, conflicts := core.Reconcile(
 			ancestor,
 			αContent,
 			βContent,
 			synchronizationMode,
-			"none",
+			resolveConflictsInFavorOf,
 		)
+		
+		// Reset the resolveConflictsFor field for future synchronization cycles
+		c.stateLock.Lock()
+		c.resolveConflictsFor = ""
+		c.stateLock.UnlockWithoutNotify()
+
 		if c.logger.Level() >= logging.LevelTrace {
 			for _, change := range ancestorChanges {
 				c.logger.Tracef("Ancestor change at \"%s\" to %s",

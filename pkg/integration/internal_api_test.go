@@ -21,6 +21,7 @@ import (
 	"github.com/mutagen-io/mutagen/pkg/selection"
 	"github.com/mutagen-io/mutagen/pkg/synchronization"
 	"github.com/mutagen-io/mutagen/pkg/synchronization/compression"
+	"github.com/mutagen-io/mutagen/pkg/synchronization/core"
 	"github.com/mutagen-io/mutagen/pkg/synchronization/hashing"
 	"github.com/mutagen-io/mutagen/pkg/url"
 )
@@ -561,3 +562,205 @@ func TestForwardingToHTTPDemo(t *testing.T) {
 }
 
 // TODO: Add forwarding tests using the netpipe protocol.
+
+// waitForSynchronizationCycleWithConflicts waits for a synchronization cycle to
+// complete and returns the session state, expecting conflicts to be present.
+func waitForSynchronizationCycleWithConflicts(ctx context.Context, sessionID string) (*synchronization.State, error) {
+	// Create a session selection specification.
+	selection := &selection.Selection{
+		Specifications: []string{sessionID},
+	}
+
+	// Perform waiting.
+	var previousStateIndex uint64
+	var states []*synchronization.State
+	var err error
+	for {
+		previousStateIndex, states, err = synchronizationManager.List(ctx, selection, previousStateIndex)
+		if err != nil {
+			return nil, fmt.Errorf("unable to list session states: %w", err)
+		} else if len(states) != 1 {
+			return nil, errors.New("invalid number of session states returned")
+		} else if states[0].SuccessfulCycles > 0 {
+			return states[0], nil
+		}
+	}
+}
+
+// TestSynchronizationFlushResolveConflictsFor tests the resolve-conflicts-for
+// option of the flush operation.
+func TestSynchronizationFlushResolveConflictsFor(t *testing.T) {
+	// Allow this test to run in parallel.
+	t.Parallel()
+
+	// Create a context for the test.
+	ctx := context.Background()
+
+	// Calculate alpha and beta paths.
+	directory := t.TempDir()
+	alphaRoot := filepath.Join(directory, "alpha")
+	betaRoot := filepath.Join(directory, "beta")
+
+	// Create the alpha and beta directories.
+	if err := os.MkdirAll(alphaRoot, 0700); err != nil {
+		t.Fatal("unable to create alpha directory:", err)
+	}
+	if err := os.MkdirAll(betaRoot, 0700); err != nil {
+		t.Fatal("unable to create beta directory:", err)
+	}
+
+	// Compute alpha and beta URLs.
+	alphaURL := &url.URL{Path: alphaRoot}
+	betaURL := &url.URL{Path: betaRoot}
+
+	// Compute configuration with two-way-safe mode (which creates conflicts
+	// instead of auto-resolving them).
+	configuration := &synchronization.Configuration{
+		SynchronizationMode: core.SynchronizationMode_SynchronizationModeTwoWaySafe,
+	}
+
+	// Create a session.
+	sessionID, err := synchronizationManager.Create(
+		ctx,
+		alphaURL, betaURL,
+		configuration,
+		&synchronization.Configuration{},
+		&synchronization.Configuration{},
+		"testResolveConflictsFor",
+		nil,
+		false,
+		"",
+	)
+	if err != nil {
+		t.Fatal("unable to create session:", err)
+	}
+
+	// Ensure session termination on test completion.
+	defer func() {
+		selection := &selection.Selection{Specifications: []string{sessionID}}
+		synchronizationManager.Terminate(ctx, selection, "")
+	}()
+
+	// Wait for the initial synchronization cycle to complete.
+	if err := waitForSuccessfulSynchronizationCycle(ctx, sessionID, false, false, false); err != nil {
+		t.Fatal("unable to wait for initial synchronization:", err)
+	}
+
+	// Create a session selection specification.
+	selection := &selection.Selection{
+		Specifications: []string{sessionID},
+	}
+
+	// Pause the session so we can create conflicting content without
+	// interference from the synchronization loop.
+	if err := synchronizationManager.Pause(ctx, selection, ""); err != nil {
+		t.Fatal("unable to pause session:", err)
+	}
+
+	// Create conflicting files on both sides.
+	alphaContent := []byte("alpha content")
+	betaContent := []byte("beta content")
+	conflictFile := "conflict.txt"
+	if err := os.WriteFile(filepath.Join(alphaRoot, conflictFile), alphaContent, 0600); err != nil {
+		t.Fatal("unable to write alpha conflict file:", err)
+	}
+	if err := os.WriteFile(filepath.Join(betaRoot, conflictFile), betaContent, 0600); err != nil {
+		t.Fatal("unable to write beta conflict file:", err)
+	}
+
+	// Resume the session.
+	if err := synchronizationManager.Resume(ctx, selection, ""); err != nil {
+		t.Fatal("unable to resume session:", err)
+	}
+
+	// Wait for a synchronization cycle and verify conflicts exist.
+	state, err := waitForSynchronizationCycleWithConflicts(ctx, sessionID)
+	if err != nil {
+		t.Fatal("unable to wait for synchronization cycle:", err)
+	}
+	if len(state.Conflicts) == 0 {
+		t.Fatal("expected conflicts but none were found")
+	}
+
+	// Test 1: Flush with resolveConflictsFor="alpha" - alpha should win.
+	if err := synchronizationManager.Flush(ctx, selection, "", false, "alpha"); err != nil {
+		t.Fatal("unable to flush with alpha resolution:", err)
+	}
+
+	// Wait for the flush to complete.
+	state, err = waitForSynchronizationCycleWithConflicts(ctx, sessionID)
+	if err != nil {
+		t.Fatal("unable to wait for synchronization after alpha flush:", err)
+	}
+
+	// Verify no conflicts remain after alpha resolution.
+	if len(state.Conflicts) > 0 {
+		t.Errorf("expected no conflicts after alpha resolution, but found %d", len(state.Conflicts))
+	}
+
+	// Verify beta has alpha's content (alpha wins).
+	betaFileContent, err := os.ReadFile(filepath.Join(betaRoot, conflictFile))
+	if err != nil {
+		t.Fatal("unable to read beta file after alpha resolution:", err)
+	}
+	if string(betaFileContent) != string(alphaContent) {
+		t.Errorf("beta file should have alpha content after alpha resolution: got %q, want %q",
+			string(betaFileContent), string(alphaContent))
+	}
+
+	// Pause the session again to create new conflicts.
+	if err := synchronizationManager.Pause(ctx, selection, ""); err != nil {
+		t.Fatal("unable to pause session for second test:", err)
+	}
+
+	// Create new conflicting files on both sides.
+	alphaContent2 := []byte("alpha content 2")
+	betaContent2 := []byte("beta content 2")
+	conflictFile2 := "conflict2.txt"
+	if err := os.WriteFile(filepath.Join(alphaRoot, conflictFile2), alphaContent2, 0600); err != nil {
+		t.Fatal("unable to write alpha conflict file 2:", err)
+	}
+	if err := os.WriteFile(filepath.Join(betaRoot, conflictFile2), betaContent2, 0600); err != nil {
+		t.Fatal("unable to write beta conflict file 2:", err)
+	}
+
+	// Resume the session.
+	if err := synchronizationManager.Resume(ctx, selection, ""); err != nil {
+		t.Fatal("unable to resume session for second test:", err)
+	}
+
+	// Wait for conflicts to appear.
+	state, err = waitForSynchronizationCycleWithConflicts(ctx, sessionID)
+	if err != nil {
+		t.Fatal("unable to wait for second conflict:", err)
+	}
+	if len(state.Conflicts) == 0 {
+		t.Fatal("expected conflicts for second test but none were found")
+	}
+
+	// Test 2: Flush with resolveConflictsFor="beta" - beta should win.
+	if err := synchronizationManager.Flush(ctx, selection, "", false, "beta"); err != nil {
+		t.Fatal("unable to flush with beta resolution:", err)
+	}
+
+	// Wait for the flush to complete.
+	state, err = waitForSynchronizationCycleWithConflicts(ctx, sessionID)
+	if err != nil {
+		t.Fatal("unable to wait for synchronization after beta flush:", err)
+	}
+
+	// Verify no conflicts remain after beta resolution.
+	if len(state.Conflicts) > 0 {
+		t.Errorf("expected no conflicts after beta resolution, but found %d", len(state.Conflicts))
+	}
+
+	// Verify alpha has beta's content (beta wins).
+	alphaFileContent, err := os.ReadFile(filepath.Join(alphaRoot, conflictFile2))
+	if err != nil {
+		t.Fatal("unable to read alpha file after beta resolution:", err)
+	}
+	if string(alphaFileContent) != string(betaContent2) {
+		t.Errorf("alpha file should have beta content after beta resolution: got %q, want %q",
+			string(alphaFileContent), string(betaContent2))
+	}
+}

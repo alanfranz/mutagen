@@ -393,7 +393,7 @@ func startMain(_ *cobra.Command, _ []string) error {
 	// Flush synchronization sessions for which flushing has been requested.
 	if len(sessionsToFlush) > 0 {
 		flushSelection := &selection.Selection{Specifications: sessionsToFlush}
-		if err := sync.FlushWithSelection(daemonConnection, flushSelection, false); err != nil {
+		if err := sync.FlushWithSelection(daemonConnection, flushSelection, false, ""); err != nil {
 			return fmt.Errorf("unable to flush synchronization session(s): %w", err)
 		}
 	}

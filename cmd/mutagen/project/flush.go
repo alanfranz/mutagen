@@ -108,7 +108,7 @@ func flushMain(_ *cobra.Command, _ []string) error {
 	}
 
 	// Flush synchronization sessions.
-	if err := sync.FlushWithSelection(daemonConnection, selection, flushConfiguration.skipWait); err != nil {
+	if err := sync.FlushWithSelection(daemonConnection, selection, flushConfiguration.skipWait, ""); err != nil {
 		return fmt.Errorf("unable to flush synchronization session(s): %w", err)
 	}
 

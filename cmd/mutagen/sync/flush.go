@@ -23,6 +23,7 @@ func FlushWithSelection(
 	daemonConnection *grpc.ClientConn,
 	selection *selection.Selection,
 	skipWait bool,
+	resolveConflictsFor string,
 ) error {
 	// Initiate command line messaging.
 	statusLinePrinter := &cmd.StatusLinePrinter{}
@@ -39,9 +40,10 @@ func FlushWithSelection(
 	// Perform the flush operation, cancel prompting, and handle errors.
 	synchronizationService := synchronizationsvc.NewSynchronizationClient(daemonConnection)
 	request := &synchronizationsvc.FlushRequest{
-		Prompter:  prompter,
-		Selection: selection,
-		SkipWait:  skipWait,
+		Prompter:            prompter,
+		Selection:           selection,
+		SkipWait:            skipWait,
+		ResolveConflictsFor: resolveConflictsFor,
 	}
 	response, err := synchronizationService.Flush(context.Background(), request)
 	promptingCancel()
@@ -61,6 +63,13 @@ func FlushWithSelection(
 
 // flushMain is the entry point for the flush command.
 func flushMain(_ *cobra.Command, arguments []string) error {
+	// Validate the resolveConflictsFor flag.
+	if flushConfiguration.resolveConflictsFor != "" &&
+		flushConfiguration.resolveConflictsFor != "alpha" &&
+		flushConfiguration.resolveConflictsFor != "beta" {
+		return fmt.Errorf("invalid --resolve-conflicts-for value: must be \"alpha\" or \"beta\"")
+	}
+
 	// Create session selection specification.
 	selection := &selection.Selection{
 		All:            flushConfiguration.all,
@@ -79,7 +88,7 @@ func flushMain(_ *cobra.Command, arguments []string) error {
 	defer daemonConnection.Close()
 
 	// Perform the flush operation.
-	return FlushWithSelection(daemonConnection, selection, flushConfiguration.skipWait)
+	return FlushWithSelection(daemonConnection, selection, flushConfiguration.skipWait, flushConfiguration.resolveConflictsFor)
 }
 
 // flushCommand is the flush command.
@@ -102,6 +111,9 @@ var flushConfiguration struct {
 	// skipWait indicates whether or not the flush operation should block until
 	// a synchronization cycle completes for each sesion requested.
 	skipWait bool
+	// resolveConflictsFor specifies which side should win for conflict
+	// resolution during this flush. Valid values are "alpha", "beta", or empty.
+	resolveConflictsFor string
 }
 
 func init() {
@@ -119,4 +131,5 @@ func init() {
 	flags.BoolVarP(&flushConfiguration.all, "all", "a", false, "Flush all sessions")
 	flags.StringVar(&flushConfiguration.labelSelector, "label-selector", "", "Flush sessions matching the specified label selector")
 	flags.BoolVar(&flushConfiguration.skipWait, "skip-wait", false, "Avoid waiting for the resulting synchronization cycle(s) to complete")
+	flags.StringVar(&flushConfiguration.resolveConflictsFor, "resolve-conflicts-for", "", "Resolve conflicts in favor of the specified side (alpha or beta)")
 }

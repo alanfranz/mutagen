@@ -1043,7 +1043,7 @@ func TestReconcile(t *testing.T) {
 		for _, mode := range test.modes {
 			// Perform reconciliation.
 			ancestorChanges, alphaChanges, betaChanges, conflicts := Reconcile(
-				test.ancestor, test.alpha, test.beta, mode,
+				test.ancestor, test.alpha, test.beta, mode, "",
 			)
 
 			// Verify the ancestor changes.
@@ -1085,5 +1085,151 @@ func TestReconcilePanicWithInvalidSynchronizationMode(t *testing.T) {
 			t.Error("Reconcile did not panic with invalid synchronization mode")
 		}
 	}()
-	Reconcile(nil, tF1, nil, SynchronizationMode(-1))
+	Reconcile(nil, tF1, nil, SynchronizationMode(-1), "")
+}
+
+// TestReconcileResolveConflictsFor tests the resolveConflictsFor parameter.
+func TestReconcileResolveConflictsFor(t *testing.T) {
+	// Define test cases.
+	var tests = []struct {
+		// description is a human readable description of the test case.
+		description string
+		// mode is the synchronization mode.
+		mode SynchronizationMode
+		// resolveConflictsFor specifies which side should win.
+		resolveConflictsFor string
+		// ancestor is the root ancestor entry.
+		ancestor *Entry
+		// alpha is the root alpha entry.
+		alpha *Entry
+		// beta is the root beta entry.
+		beta *Entry
+		// expectedAncestorChanges are the expected ancestor changes.
+		expectedAncestorChanges []*Change
+		// expectedAlphaChanges are the expected alpha changes.
+		expectedAlphaChanges []*Change
+		// expectedBetaChanges are the expected beta changes.
+		expectedBetaChanges []*Change
+		// expectedConflicts are the expected conflicts.
+		expectedConflicts []*Conflict
+	}{
+		// Test resolve-conflicts-for=alpha in TwoWaySafe mode.
+		{
+			description:         "both created different file with alpha override",
+			mode:                SynchronizationMode_SynchronizationModeTwoWaySafe,
+			resolveConflictsFor: "alpha",
+			alpha:               tF1,
+			beta:                tF2,
+			expectedBetaChanges: []*Change{{Old: tF2, New: tF1}},
+		},
+		// Test resolve-conflicts-for=beta in TwoWaySafe mode.
+		{
+			description:          "both created different file with beta override",
+			mode:                 SynchronizationMode_SynchronizationModeTwoWaySafe,
+			resolveConflictsFor:  "beta",
+			alpha:                tF1,
+			beta:                 tF2,
+			expectedAlphaChanges: []*Change{{Old: tF1, New: tF2}},
+		},
+		// Test alpha override in directory conflict.
+		{
+			description:             "both created directory with different file with alpha override",
+			mode:                    SynchronizationMode_SynchronizationModeTwoWaySafe,
+			resolveConflictsFor:     "alpha",
+			alpha:                   tD1,
+			beta:                    tD2,
+			expectedAncestorChanges: []*Change{{New: tD0}},
+			expectedBetaChanges:     []*Change{{Path: "file", Old: tF2, New: tF1}},
+		},
+		// Test beta override in directory conflict.
+		{
+			description:             "both created directory with different file with beta override",
+			mode:                    SynchronizationMode_SynchronizationModeTwoWaySafe,
+			resolveConflictsFor:     "beta",
+			alpha:                   tD1,
+			beta:                    tD2,
+			expectedAncestorChanges: []*Change{{New: tD0}},
+			expectedAlphaChanges:    []*Change{{Path: "file", Old: tF1, New: tF2}},
+		},
+		// Test that alpha override blocked by unsynchronizable content still
+		// produces a conflict.
+		{
+			description:         "alpha override blocked by unsynchronizable content on beta",
+			mode:                SynchronizationMode_SynchronizationModeTwoWaySafe,
+			resolveConflictsFor: "alpha",
+			alpha:               tF1,
+			beta:                tDU,
+			expectedConflicts: []*Conflict{{
+				AlphaChanges: []*Change{{New: tF1}},
+				BetaChanges:  []*Change{{Path: "untracked", New: tU}},
+			}},
+		},
+		// Test that beta override blocked by unsynchronizable content still
+		// produces a conflict.
+		{
+			description:         "beta override blocked by unsynchronizable content on alpha",
+			mode:                SynchronizationMode_SynchronizationModeTwoWaySafe,
+			resolveConflictsFor: "beta",
+			alpha:               tDU,
+			beta:                tF1,
+			expectedConflicts: []*Conflict{{
+				AlphaChanges: []*Change{{Path: "untracked", New: tU}},
+				BetaChanges:  []*Change{{New: tF1}},
+			}},
+		},
+		// Test alpha override in TwoWayResolved mode (should still work).
+		{
+			description:         "TwoWayResolved with alpha override",
+			mode:                SynchronizationMode_SynchronizationModeTwoWayResolved,
+			resolveConflictsFor: "alpha",
+			alpha:               tF1,
+			beta:                tF2,
+			expectedBetaChanges: []*Change{{Old: tF2, New: tF1}},
+		},
+		// Test beta override in TwoWayResolved mode (changes default behavior).
+		{
+			description:          "TwoWayResolved with beta override",
+			mode:                 SynchronizationMode_SynchronizationModeTwoWayResolved,
+			resolveConflictsFor:  "beta",
+			alpha:                tF1,
+			beta:                 tF2,
+			expectedAlphaChanges: []*Change{{Old: tF1, New: tF2}},
+		},
+	}
+
+	// Process test cases.
+	for _, test := range tests {
+		// Perform reconciliation.
+		ancestorChanges, alphaChanges, betaChanges, conflicts := Reconcile(
+			test.ancestor, test.alpha, test.beta, test.mode, test.resolveConflictsFor,
+		)
+
+		// Verify the ancestor changes.
+		if !testingChangeListsEqual(ancestorChanges, test.expectedAncestorChanges) {
+			t.Errorf("%s: ancestor changes do not match expected: %v != %v",
+				test.description, ancestorChanges, test.expectedAncestorChanges,
+			)
+		}
+
+		// Verify the alpha changes.
+		if !testingChangeListsEqual(alphaChanges, test.expectedAlphaChanges) {
+			t.Errorf("%s: alpha changes do not match expected: %v != %v",
+				test.description, alphaChanges, test.expectedAlphaChanges,
+			)
+		}
+
+		// Verify the beta changes.
+		if !testingChangeListsEqual(betaChanges, test.expectedBetaChanges) {
+			t.Errorf("%s: beta changes do not match expected: %v != %v",
+				test.description, betaChanges, test.expectedBetaChanges,
+			)
+		}
+
+		// Verify the conflicts.
+		if !testingConflictListsEqual(conflicts, test.expectedConflicts) {
+			t.Errorf("%s: conflicts do not match expected: %v != %v",
+				test.description, conflicts, test.expectedConflicts,
+			)
+		}
+	}
 }

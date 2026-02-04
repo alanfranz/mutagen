@@ -345,7 +345,9 @@ func (m *Manager) List(ctx context.Context, selection *selection.Selection, prev
 }
 
 // Flush tells the manager to flush sessions matching the given specifications.
-func (m *Manager) Flush(ctx context.Context, selection *selection.Selection, prompter string, skipWait bool) error {
+// The resolveConflictsFor parameter can be set to "alpha" or "beta" to force
+// conflict resolution in favor of the specified side for this flush only.
+func (m *Manager) Flush(ctx context.Context, selection *selection.Selection, prompter string, skipWait bool, resolveConflictsFor string) error {
 	// Extract the controllers for the sessions of interest.
 	controllers, err := m.selectControllers(selection)
 	if err != nil {
@@ -354,7 +356,7 @@ func (m *Manager) Flush(ctx context.Context, selection *selection.Selection, pro
 
 	// Attempt to flush the sessions.
 	for _, controller := range controllers {
-		if err := controller.flush(ctx, prompter, skipWait); err != nil {
+		if err := controller.flush(ctx, prompter, skipWait, resolveConflictsFor); err != nil {
 			return fmt.Errorf("unable to flush session: %w", err)
 		}
 	}

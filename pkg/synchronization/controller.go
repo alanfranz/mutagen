@@ -31,6 +31,15 @@ const (
 	rescanWaitDuration = 5 * time.Second
 )
 
+// flushRequest encapsulates a flush request with optional conflict resolution.
+type flushRequest struct {
+	// response is used to send back the result of the flush operation.
+	response chan error
+	// resolveConflictsFor specifies which side should win for conflict
+	// resolution during this flush. Valid values are "alpha", "beta", or empty.
+	resolveConflictsFor string
+}
+
 // controller manages and executes a single session.
 type controller struct {
 	// logger is the controller logger.
@@ -86,9 +95,8 @@ type controller struct {
 	// and only if there is no synchronization loop running.
 	cancel context.CancelFunc
 	// flushRequests is used pass flush requests to the synchronization loop. It
-	// is buffered, allowing a single request to be queued. All requests passed
-	// via this channel must be buffered and contain room for one error.
-	flushRequests chan chan error
+	// is buffered, allowing a single request to be queued.
+	flushRequests chan *flushRequest
 	// done will be closed by the current synchronization loop when it exits.
 	done chan struct{}
 }
@@ -230,7 +238,7 @@ func newSession(
 	if !paused {
 		ctx, cancel := context.WithCancel(context.Background())
 		controller.cancel = cancel
-		controller.flushRequests = make(chan chan error, 1)
+		controller.flushRequests = make(chan *flushRequest, 1)
 		controller.done = make(chan struct{})
 		go controller.run(ctx, alphaEndpoint, betaEndpoint)
 		alphaEndpoint = nil
@@ -298,7 +306,7 @@ func loadSession(logger *logging.Logger, tracker *state.Tracker, identifier stri
 	if !session.Paused {
 		ctx, cancel := context.WithCancel(context.Background())
 		controller.cancel = cancel
-		controller.flushRequests = make(chan chan error, 1)
+		controller.flushRequests = make(chan *flushRequest, 1)
 		controller.done = make(chan struct{})
 		go controller.run(ctx, nil, nil)
 	}
@@ -323,8 +331,10 @@ func (c *controller) currentState() *State {
 // flush attempts to force a synchronization cycle for the session. If wait is
 // specified, then the method will wait until a post-flush synchronization cycle
 // has completed. The provided context (which must be non-nil) can terminate
-// this wait early.
-func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) error {
+// this wait early. The resolveConflictsFor parameter can be set to "alpha" or
+// "beta" to force conflict resolution in favor of the specified side for this
+// flush only.
+func (c *controller) flush(ctx context.Context, prompter string, skipWait bool, resolveConflictsFor string) error {
 	// Update status.
 	prompting.Message(prompter, fmt.Sprintf("Forcing synchronization cycle for session %s...", c.session.Identifier))
 
@@ -365,7 +375,10 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 	c.lifecycleLock.Unlock()
 
 	// Create a flush request.
-	request := make(chan error, 1)
+	request := &flushRequest{
+		response:            make(chan error, 1),
+		resolveConflictsFor: resolveConflictsFor,
+	}
 
 	// If we don't want to wait, then we can simply send the request in a
 	// non-blocking manner, in which case either this request (or one that's
@@ -400,7 +413,7 @@ func (c *controller) flush(ctx context.Context, prompter string, skipWait bool) 
 	// Now we need to wait for a response to the request, again watching for
 	// cancellation, failure, or termination.
 	select {
-	case err := <-request:
+	case err := <-request.response:
 		return err
 	case <-ctx.Done():
 		return errors.New("flush cancelled while waiting for response")
@@ -515,7 +528,7 @@ func (c *controller) resume(ctx context.Context, prompter string, lifecycleLockH
 	// loop keep trying to connect.
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
-	c.flushRequests = make(chan chan error, 1)
+	c.flushRequests = make(chan *flushRequest, 1)
 	c.done = make(chan struct{})
 	go c.run(ctx, alpha, beta)
 
@@ -860,7 +873,7 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 	}
 
 	// Track whether or not a flush request triggered the synchronization loop.
-	var flushRequest chan error
+	var currentFlushRequest *flushRequest
 
 	// Load the archive and extract the ancestor. We enforce that the archive
 	// contains only synchronizable content.
@@ -989,9 +1002,9 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 				c.logger.Debug("Triggered by beta endpoint")
 				pollCancel()
 				αPollErr = <-αPollResults
-			case flushRequest = <-c.flushRequests:
-				if cap(flushRequest) < 1 {
-					panic("unbuffered flush request")
+			case currentFlushRequest = <-c.flushRequests:
+				if cap(currentFlushRequest.response) < 1 {
+					panic("unbuffered flush request response channel")
 				}
 				c.logger.Debug("Triggered by flush request")
 				pollCancel()
@@ -1024,7 +1037,7 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 		c.stateLock.Lock()
 		c.state.Status = Status_Scanning
 		c.stateLock.Unlock()
-		forceFullScan := flushRequest != nil
+		forceFullScan := currentFlushRequest != nil
 		var αSnapshot, βSnapshot *core.Snapshot
 		var αScanErr, βScanErr error
 		var αTryAgain, βTryAgain bool
@@ -1181,13 +1194,19 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 			return errHaltedForSafety
 		}
 
-		// Perform reconciliation.
+		// Perform reconciliation. Extract resolveConflictsFor from the flush
+		// request if present.
 		c.logger.Debug("Performing reconciliation")
+		var resolveConflictsFor string
+		if currentFlushRequest != nil {
+			resolveConflictsFor = currentFlushRequest.resolveConflictsFor
+		}
 		ancestorChanges, αTransitions, βTransitions, conflicts := core.Reconcile(
 			ancestor,
 			αContent,
 			βContent,
 			synchronizationMode,
+			resolveConflictsFor,
 		)
 		if c.logger.Level() >= logging.LevelTrace {
 			for _, change := range ancestorChanges {
@@ -1435,9 +1454,9 @@ func (c *controller) synchronize(ctx context.Context, alpha, beta Endpoint) erro
 
 		// If a flush request triggered this synchronization cycle, then tell it
 		// that the cycle has completed and remove it from our tracking.
-		if flushRequest != nil {
-			flushRequest <- nil
-			flushRequest = nil
+		if currentFlushRequest != nil {
+			currentFlushRequest.response <- nil
+			currentFlushRequest = nil
 		}
 	}
 }

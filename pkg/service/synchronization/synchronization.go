@@ -156,6 +156,11 @@ func (r *FlushRequest) ensureValid() error {
 
 	// Any value of SkipWait is considered valid.
 
+	// Validate resolveConflictsFor if specified.
+	if r.ResolveConflictsFor != "" && r.ResolveConflictsFor != "alpha" && r.ResolveConflictsFor != "beta" {
+		return fmt.Errorf("invalid resolveConflictsFor value: must be empty, \"alpha\", or \"beta\"")
+	}
+
 	// Success.
 	return nil
 }

@@ -21,6 +21,10 @@ type reconciler struct {
 	// mode is the synchronization mode to use when determining directionality
 	// and conflict resolution behavior.
 	mode SynchronizationMode
+	// resolveConflictsFor specifies which side should win for conflict
+	// resolution during this reconciliation. Valid values are "alpha", "beta",
+	// or empty (no override, use mode's default behavior).
+	resolveConflictsFor string
 	// ancestorChanges are the changes to be applied to the ancestor.
 	ancestorChanges []*Change
 	// alphaChanges are the changes to be applied to alpha.
@@ -359,7 +363,39 @@ func (r *reconciler) handleDisagreementBidirectional(path string, ancestor, alph
 	// At this point, we've seen that both sides have non-deletion chanages, so
 	// there are no other heuristics we can apply that don't involve overwriting
 	// new content. We need to either indicate a conflict or force a resolution.
-	if r.mode == SynchronizationMode_SynchronizationModeTwoWaySafe {
+	//
+	// If resolveConflictsFor is set, use it to override the default behavior.
+	if r.resolveConflictsFor == "alpha" {
+		// Alpha wins - apply alpha's content to beta.
+		if betaUnsynchronizable := diff(path, β, beta); len(betaUnsynchronizable) > 0 {
+			r.conflicts = append(r.conflicts, &Conflict{
+				Root:         path,
+				AlphaChanges: αDiffNonDeletion,
+				BetaChanges:  betaUnsynchronizable,
+			})
+		} else {
+			r.betaChanges = append(r.betaChanges, &Change{
+				Path: path,
+				Old:  β,
+				New:  α,
+			})
+		}
+	} else if r.resolveConflictsFor == "beta" {
+		// Beta wins - apply beta's content to alpha.
+		if alphaUnsynchronizable := diff(path, α, alpha); len(alphaUnsynchronizable) > 0 {
+			r.conflicts = append(r.conflicts, &Conflict{
+				Root:         path,
+				AlphaChanges: alphaUnsynchronizable,
+				BetaChanges:  βDiffNonDeletion,
+			})
+		} else {
+			r.alphaChanges = append(r.alphaChanges, &Change{
+				Path: path,
+				Old:  α,
+				New:  β,
+			})
+		}
+	} else if r.mode == SynchronizationMode_SynchronizationModeTwoWaySafe {
 		r.conflicts = append(r.conflicts, &Conflict{
 			Root:         path,
 			AlphaChanges: αDiffNonDeletion,
@@ -520,9 +556,12 @@ func (r *reconciler) handleDisagreementOneWayReplica(path string, ancestor, alph
 // Reconcile performs a recursive three-way merge and generates a list of
 // changes for the ancestor, alpha, and beta, as well as a list of conflicts.
 // All of these lists are returned in depth-first but non-deterministic order.
-func Reconcile(ancestor, alpha, beta *Entry, mode SynchronizationMode) ([]*Change, []*Change, []*Change, []*Conflict) {
+// The resolveConflictsFor parameter can be set to "alpha" or "beta" to force
+// conflict resolution in favor of the specified side for this reconciliation
+// only. An empty string uses the default mode behavior.
+func Reconcile(ancestor, alpha, beta *Entry, mode SynchronizationMode, resolveConflictsFor string) ([]*Change, []*Change, []*Change, []*Conflict) {
 	// Create the reconciler.
-	r := &reconciler{mode: mode}
+	r := &reconciler{mode: mode, resolveConflictsFor: resolveConflictsFor}
 
 	// Perform reconciliation.
 	r.reconcile("", ancestor, alpha, beta)

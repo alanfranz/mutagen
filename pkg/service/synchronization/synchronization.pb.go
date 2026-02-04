@@ -366,6 +366,10 @@ type FlushRequest struct {
 	Selection *selection.Selection `protobuf:"bytes,2,opt,name=selection,proto3" json:"selection,omitempty"`
 	// SkipWait indicates whether or not the operation should avoid blocking.
 	SkipWait bool `protobuf:"varint,3,opt,name=skipWait,proto3" json:"skipWait,omitempty"`
+	// ResolveConflictsFor specifies which side should win for conflict
+	// resolution during this flush. Valid values are "alpha", "beta", or empty
+	// (no conflict resolution override).
+	ResolveConflictsFor string `protobuf:"bytes,4,opt,name=resolveConflictsFor,proto3" json:"resolveConflictsFor,omitempty"`
 }
 
 func (x *FlushRequest) Reset() {
@@ -417,6 +421,13 @@ func (x *FlushRequest) GetSkipWait() bool {
 		return x.SkipWait
 	}
 	return false
+}
+
+func (x *FlushRequest) GetResolveConflictsFor() string {
+	if x != nil {
+		return x.ResolveConflictsFor
+	}
+	return ""
 }
 
 // FlushResponse indicates completion of flush operation(s).
